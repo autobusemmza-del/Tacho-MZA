@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DriverTime City PRO 2.1</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+<style>
+body{
+    margin:0;
+    background:#0a0a0a;
+    font-family:'Courier New', monospace;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    height:100vh;
+    color:#9CFF57;
+}
+.tacho{
+    background:#111;
+    border:6px solid #1c1c1c;
+    border-radius:12px;
+    padding:20px;
+    width:95vw;
+    max-width:1100px;
+}
+.display{
+    background:#000;
+    padding:15px;
+    border-radius:6px;
+    margin-bottom:10px;
+}
+.row{
+    display:flex;
+    justify-content:space-between;
+    margin:6px 0;
+    font-size:18px;
+}
+.big{
+    font-size:32px;
+    text-align:center;
+    margin:10px 0;
+}
+.buttons{
+    display:flex;
+    gap:6px;
+    margin-bottom:8px;
+}
+button{
+    flex:1;
+    background:#1a1a1a;
+    border:1px solid #333;
+    color:#9CFF57;
+    padding:10px;
+    font-size:14px;
+    border-radius:4px;
+    cursor:pointer;
+}
+button.active{
+    background:#003300;
+    box-shadow:0 0 8px #00ff00;
+}
+.status{
+    background:#000;
+    padding:8px;
+    border-radius:6px;
+    margin-bottom:8px;
+    font-size:13px;
+    min-height:40px;
+}
+.ok{ color:#9CFF57; }
+.bad{ color:#ff3b3b; }
+
+.history{
+    background:#000;
+    padding:8px;
+    border-radius:6px;
+    max-height:200px;
+    overflow-y:auto;
+    font-size:12px;
+}
+.history div{
+    border-bottom:1px solid #222;
+    padding:4px 0;
+    cursor:pointer;
+}
+
+.modal{
+    position:fixed;
+    top:0;left:0;
+    width:100%;
+    height:100%;
+    background:rgba(0,0,0,0.8);
+    display:none;
+    justify-content:center;
+    align-items:center;
+}
+.modal-content{
+    background:#111;
+    padding:20px;
+    border-radius:8px;
+    width:320px;
+}
+.modal-content input,
+.modal-content select{
+    width:100%;
+    margin:5px 0;
+    padding:6px;
+    background:#000;
+    color:#9CFF57;
+    border:1px solid #333;
+}
+</style>
+</head>
+
+<body>
+
+<div class="tacho">
+
+<div class="display">
+<div class="row">
+<span id="clock">--:--</span>
+<span>TRYB: <span id="mode">BRAK</span></span>
+</div>
+
+<div class="big" id="shiftTime">00:00:00</div>
+
+<div class="row">
+<span>🚍 JAZDA: <span id="driveTime">00:00</span></span>
+<span>🛠 PRACA: <span id="workTime">00:00</span></span>
+</div>
+</div>
+
+<div class="buttons">
+<button id="btnJ" onclick="changeMode('JAZDA')">🚍</button>
+<button id="btnI" onclick="changeMode('INNA')">🛠</button>
+<button id="btnP" onclick="changeMode('PRZERWA')">⏸</button>
+<button id="btnO" onclick="changeMode('ODPOCZYNEK')">🛌</button>
+<button onclick="resetDay()">RESET DNIA</button>
+<button onclick="resetAll()">RESET CAŁOŚCI</button>
+<button onclick="exportPDF()">EXPORT PDF</button>
+</div>
+
+<div class="status" id="statusBox"></div>
+<div class="history" id="history"></div>
+
+</div>
+
+<div class="modal" id="editModal">
+<div class="modal-content">
+<h3>Edycja segmentu</h3>
+<select id="editMode">
+<option value="JAZDA">JAZDA</option>
+<option value="INNA">INNA</option>
+<option value="PRZERWA">PRZERWA</option>
+<option value="ODPOCZYNEK">ODPOCZYNEK</option>
+</select>
+<input type="datetime-local" id="editStart">
+<input type="datetime-local" id="editEnd">
+<button onclick="saveEdit()">Zapisz</button>
+<button onclick="deleteSegment()">Usuń</button>
+<button onclick="closeModal()">Anuluj</button>
+</div>
+</div>
+
+<script>
+
+let segments = JSON.parse(localStorage.getItem("segments")) || [];
+let activeSegment = JSON.parse(localStorage.getItem("activeSegment")) || null;
+
+let currentMode=null;
+let segmentStart=null;
+let shiftStart=null;
+let timerInterval=null;
+let editIndex=null;
+
+if(activeSegment){
+    currentMode=activeSegment.mode;
+    segmentStart=activeSegment.start;
+    shiftStart=activeSegment.shiftStart;
+    document.getElementById("mode").innerText=currentMode;
+    highlightButton(currentMode);
+    startTimer();
+}
+
+renderHistory();
+
+function changeMode(newMode){
+    const now=Date.now();
+
+    if(currentMode){
+        segments.push({mode:currentMode,start:segmentStart,end:now});
+    }
+
+    if(segments.length>0){
+        const last=segments[segments.length-1];
+        if(last.mode==="ODPOCZYNEK" && last.end-last.start>=11*60*60*1000){
+            shiftStart=now;
+        }
+    }
+
+    if(!shiftStart) shiftStart=now;
+
+    currentMode=newMode;
+    segmentStart=now;
+
+    localStorage.setItem("activeSegment",JSON.stringify({
+        mode:newMode,start:segmentStart,shiftStart:shiftStart
+    }));
+
+    localStorage.setItem("segments",JSON.stringify(segments));
+
+    document.getElementById("mode").innerText=newMode;
+    highlightButton(newMode);
+    renderHistory();
+    startTimer();
+}
+
+function startTimer(){
+    if(timerInterval) clearInterval(timerInterval);
+    timerInterval=setInterval(updateDisplay,1000);
+}
+
+function updateDisplay(){
+    const now=Date.now();
+    const t=new Date();
+
+    document.getElementById("clock").innerText=
+        pad(t.getHours())+":"+pad(t.getMinutes());
+
+    if(!shiftStart) return;
+
+    const shiftMs=now-shiftStart;
+    document.getElementById("shiftTime").innerText=formatFull(shiftMs);
+
+    const analysis = analyzeDay();
+    document.getElementById("driveTime").innerText=formatShort(analysis.driveMs);
+    document.getElementById("workTime").innerText=formatShort(analysis.workMs);
+
+    renderStatus(analysis);
+}
+
+function analyzeDay(){
+
+    const now=Date.now();
+    let drive=0, work=0, breaks=0;
+
+    segments.forEach(s=>{
+        if(s.start < shiftStart) return;
+        const d=s.end-s.start;
+        if(s.mode==="JAZDA") drive+=d;
+        if(s.mode==="JAZDA"||s.mode==="INNA") work+=d;
+        if(s.mode==="PRZERWA") breaks+=d;
+    });
+
+    if(currentMode && segmentStart>=shiftStart){
+        const d=now-segmentStart;
+        if(currentMode==="JAZDA") drive+=d;
+        if(currentMode==="JAZDA"||currentMode==="INNA") work+=d;
+        if(currentMode==="PRZERWA") breaks+=d;
+    }
+
+    let violations=[];
+
+    if(work>12*60*60*1000) violations.push("PRZEKROCZENIE 12H PRACY");
+    if(work>=6*60*60*1000 && breaks<15*60*1000)
+        violations.push("BRAK 15 MIN PRZERWY (PRACA)");
+    if(work>8*60*60*1000 && breaks<30*60*1000)
+        violations.push("BRAK 30 MIN PRZERWY (PRACA)");
+    if(drive>=6*60*60*1000 && drive<=8*60*60*1000 && breaks<30*60*1000)
+        violations.push("BRAK 30 MIN PRZERWY (JAZDA)");
+    if(drive>8*60*60*1000 && breaks<45*60*1000)
+        violations.push("BRAK 45 MIN PRZERWY (JAZDA)");
+
+    return {driveMs:drive, workMs:work, violations};
+}
+
+function renderStatus(a){
+    const box=document.getElementById("statusBox");
+    box.innerHTML="";
+    if(a.violations.length===0){
+        box.className="status ok";
+        box.innerText="STATUS: OK";
+    } else {
+        box.className="status bad";
+        box.innerHTML="STATUS: NARUSZENIE<br>"+a.violations.join("<br>");
+    }
+}
+
+function resetDay(){
+    if(confirm("Rozpocząć nowy dzień?")){
+        shiftStart=Date.now();
+        localStorage.removeItem("activeSegment");
+        currentMode=null;
+        segmentStart=null;
+        document.getElementById("mode").innerText="BRAK";
+    }
+}
+
+function resetAll(){
+    if(confirm("Wyzerować cały tachograf?")){
+        localStorage.clear();
+        location.reload();
+    }
+}
+
+function exportPDF(){
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    doc.setFontSize(10);
+    doc.text("DriverTime City PRO – Rejestr",10,10);
+    let y=20;
+
+    segments.forEach(s=>{
+        const line =
+            s.mode+" | "+
+            new Date(s.start).toLocaleString()+" - "+
+            new Date(s.end).toLocaleString();
+        doc.text(line,10,y);
+        y+=6;
+        if(y>280){ doc.addPage(); y=10; }
+    });
+
+    doc.save("DriverTime_Rejestr.pdf");
+}
+
+function renderHistory(){
+    const h=document.getElementById("history");
+    h.innerHTML="";
+    segments.slice().reverse().forEach((s,i)=>{
+        const div=document.createElement("div");
+        div.innerText=
+            s.mode+" | "+
+            new Date(s.start).toLocaleString()+
+            " - "+
+            new Date(s.end).toLocaleTimeString();
+        div.onclick=()=>openEdit(segments.length-1-i);
+        h.appendChild(div);
+    });
+}
+
+function openEdit(i){
+    editIndex=i;
+    const s=segments[i];
+    document.getElementById("editMode").value=s.mode;
+    document.getElementById("editStart").value=toInput(s.start);
+    document.getElementById("editEnd").value=toInput(s.end);
+    document.getElementById("editModal").style.display="flex";
+}
+function closeModal(){
+    document.getElementById("editModal").style.display="none";
+}
+function saveEdit(){
+    const mode=document.getElementById("editMode").value;
+    const start=new Date(document.getElementById("editStart").value).getTime();
+    const end=new Date(document.getElementById("editEnd").value).getTime();
+    if(end<=start){ alert("Błędny zakres czasu"); return; }
+    segments[editIndex]={mode,start,end};
+    localStorage.setItem("segments",JSON.stringify(segments));
+    renderHistory();
+    closeModal();
+}
+function deleteSegment(){
+    segments.splice(editIndex,1);
+    localStorage.setItem("segments",JSON.stringify(segments));
+    renderHistory();
+    closeModal();
+}
+
+function formatFull(ms){
+    const s=Math.floor(ms/1000);
+    return pad(Math.floor(s/3600))+":"+
+           pad(Math.floor((s%3600)/60))+":"+
+           pad(s%60);
+}
+function formatShort(ms){
+    const s=Math.floor(ms/1000);
+    return pad(Math.floor(s/3600))+":"+
+           pad(Math.floor((s%3600)/60));
+}
+function pad(n){return String(n).padStart(2,'0');}
+function toInput(ts){return new Date(ts).toISOString().slice(0,16);}
+function highlightButton(mode){
+    document.querySelectorAll(".buttons button").forEach(b=>b.classList.remove("active"));
+    if(mode==="JAZDA") btnJ.classList.add("active");
+    if(mode==="INNA") btnI.classList.add("active");
+    if(mode==="PRZERWA") btnP.classList.add("active");
+    if(mode==="ODPOCZYNEK") btnO.classList.add("active");
+}
+
+</script>
+</body>
+</html>
